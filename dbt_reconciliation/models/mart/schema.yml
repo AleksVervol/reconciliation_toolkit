@@ -1,0 +1,14 @@
+version: 2
+
+models:
+  - name: mart_missing_deliveries
+    description: "Orders with no matching delivery record."
+
+  - name: mart_amount_discrepancies
+    description: "Matched order/delivery pairs where the amounts don't agree."
+
+  - name: mart_duplicate_deliveries
+    description: "Order IDs that appear more than once in deliveries."
+
+  - name: mart_balance_discrepancies
+    description: "Transactions where the sender's actual balance doesn't match the expected balance after the transaction."

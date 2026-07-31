@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+*.duckdb.wal
+dbt_reconciliation/target/
+dbt_reconciliation/logs/
