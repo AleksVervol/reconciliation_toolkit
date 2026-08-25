@@ -1,3 +1,7 @@
-SELECT *
+SELECT
+    order_id,
+    customer,
+    order_amount,
+    order_date
 FROM {{ ref('prep_orders_deliveries_merged') }}
-WHERE delivered_amount IS NULL
+WHERE flag_missing_delivery = 1

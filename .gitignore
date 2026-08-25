@@ -1,6 +1,24 @@
+# Python
 venv/
+.venv/
 __pycache__/
 *.pyc
+
+# DuckDB generated files
+*.duckdb
 *.duckdb.wal
+
+# dbt generated files
 dbt_reconciliation/target/
 dbt_reconciliation/logs/
+dbt_reconciliation/dbt_packages/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+
+# Tableau data exports
+dashboard/*.csv

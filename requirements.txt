@@ -1,0 +1,6 @@
+duckdb
+pandas
+Faker
+dbt-core
+dbt-duckdb
+jupyter

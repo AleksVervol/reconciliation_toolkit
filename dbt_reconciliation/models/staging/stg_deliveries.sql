@@ -1,5 +1,5 @@
 SELECT
     order_id,
-    delivered_amount,
-    delivery_date
+    CAST(delivered_amount AS DECIMAL(18, 2)) AS delivered_amount,
+    CAST(delivery_date AS DATE) AS delivery_date
 FROM {{ source('raw', 'deliveries') }}

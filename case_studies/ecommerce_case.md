@@ -1,47 +1,79 @@
-# Case Study: Order vs. Delivery Reconciliation
+# Case Study: Order-to-Delivery Reconciliation
 
-## Hypothesis
-When two systems record the same business event independently (an order-management 
-system and a delivery/fulfillment system), discrepancies naturally creep in — missing 
-records, mismatched amounts, and duplicate entries. A general-purpose reconciliation 
-pipeline should be able to surface all three without domain-specific logic.
+## Objective
+
+Build a reproducible reconciliation pipeline that compares records from
+two systems and identifies common operational exceptions: missing records,
+amount discrepancies, and duplicate entries.
 
 ## Method
-A synthetic dataset of 1,000 orders was generated (Faker), with delivery records 
-intentionally introduced with three types of discrepancies: missing deliveries, 
-amount mismatches, and duplicate delivery entries. The data was loaded into DuckDB 
-and processed through a dbt pipeline (staging → prep → mart), with three dedicated 
-mart models isolating each discrepancy type.
+
+A synthetic dataset of 1,000 orders was generated with Faker, with three
+types of reconciliation exceptions intentionally introduced:
+
+- missing delivery records;
+- mismatched order and delivered amounts;
+- duplicate delivery records.
+
+The data is loaded into DuckDB and transformed through a dbt pipeline:
+
+`raw → staging → reconciliation prep → marts`
+
+The reconciliation logic is centralized at order level, where each order
+is assigned exception flags and an overall reconciliation status.
+Dedicated marts expose each exception type for analysis, while a final
+dashboard mart provides one row per order for operational monitoring.
+
+A configurable tolerance of 0.01 is applied when identifying material
+amount discrepancies.
 
 ## Findings
 
-**Missing deliveries** (`mart_missing_deliveries`): 44 orders have no matching 
-delivery record at all — roughly 4.4% of all orders. These represent orders that 
-may be lost, delayed beyond the tracking window, or never fulfilled.
+The final reconciliation mart contains 1,000 unique orders and identifies
+137 orders with at least one exception (13.7%).
 
-**Amount discrepancies** (`mart_amount_discrepancies`): 57 orders were delivered, 
-but the delivered amount doesn't match the order amount — about 5.7% of orders. 
-This could indicate partial refunds, data entry errors, or fulfillment issues.
+| Exception Type | Orders | Share of Orders |
+|---|---:|---:|
+| Missing Delivery | 44 | 4.4% |
+| Amount Discrepancy | 57 | 5.7% |
+| Duplicate Delivery | 36 | 3.6% |
+| **Total Exceptions** | **137** | **13.7%** |
 
-**Duplicate deliveries** (`mart_duplicate_deliveries`): 36 order IDs appear more 
-than once in the delivery records — about 3.6% of orders. Left unresolved, these 
-would inflate delivery counts and distort any downstream reporting (e.g. revenue 
-recognition, fulfillment KPIs).
+In the generated dataset, the three exception categories are mutually
+exclusive.
 
-Combined, roughly 13-14% of orders in this dataset show some form of discrepancy 
-between the two systems — a reminder that reconciliation isn't a one-off check but 
-an ongoing data quality concern.
+### Financial relevance
+
+The 57 amount discrepancies represent a total absolute discrepancy volume
+of **3,106.54**.
+
+The 44 orders without a matching delivery record represent **10,075.78**
+in affected order value.
+
+Affected order value should not be interpreted as confirmed financial loss.
+It represents transaction value requiring investigation.
+
+## Operational Use
+
+Each exception type supports a different review workflow:
+
+- **Missing Delivery** — investigate why no corresponding delivery record
+  exists.
+- **Amount Discrepancy** — review the difference between order and delivered
+  values and determine whether an adjustment is expected.
+- **Duplicate Delivery** — investigate multiple delivery records associated
+  with the same order before using the data for downstream reporting.
+
+The Tableau dashboard provides an operational control layer where users can
+monitor overall reconciliation status, filter exception categories, and
+prioritize individual records for investigation.
 
 ## Recommendation
-Each discrepancy type needs a different operational response, not a single blanket 
-fix:
-- **Missing deliveries** should trigger an investigation workflow (has the order 
-  actually shipped, or is it stuck?).
-- **Amount discrepancies** should be reviewed against refund/adjustment logs before 
-  being treated as errors — some may be legitimate.
-- **Duplicate deliveries** should be deduplicated at the reporting layer, with the 
-  root cause (e.g. retry logic firing twice) addressed upstream.
 
-This same three-part pattern — missing, mismatched, duplicated — generalizes well 
-beyond orders/deliveries; the same mart-model structure was reused for the fintech 
-case study with transaction data.
+Reconciliation rules should be defined once and reused consistently across
+downstream outputs.
+
+In this project, exception logic is centralized in the dbt preparation
+layer, while dedicated marts and the Tableau dashboard consume the same
+validated definitions. This avoids different reports applying different
+rules to the same reconciliation problem.

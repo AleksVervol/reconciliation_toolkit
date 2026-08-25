@@ -1,31 +1,81 @@
-## Hypothesis
-A discrepancy between the sender's expected and actual balance after a transaction
-is a potential indicator of fraud.
+## Objective
+
+Build a simple rule-based framework for prioritizing transactions for
+operational review and validate whether the selected risk signals are
+supported by observed fraud patterns.
+
+The analysis uses a 50,000-transaction sample from the PaySim synthetic
+financial transaction dataset.
 
 ## Method
-Based on the dbt mart model `mart_balance_discrepancies`: comparing the sender's
-balance before/after each transaction against the expected value (balance before
-minus transaction amount), on a 50,000-transaction sample from PaySim.
 
-## Finding (updated)
-An initial 4-signal anomaly score (balance mismatch, large amount, risky 
-transaction type, system-flagged) was tested against the ground-truth 
-`isFraud` label. Per-signal validation revealed that balance mismatch — 
-intuitively the strongest signal — actually *inversely* correlated with 
-fraud (0.013% fraud rate when mismatched vs. 0.872% when balances matched). 
-This is a known PaySim artifact: destination balances for CASH_OUT 
-transactions (typically merchants) are often recorded as zero regardless 
-of fraud status, making balance mismatch a data quality artifact rather 
-than a fraud signal.
+Candidate transaction characteristics were explored against the
+ground-truth `isFraud` label before being included in the final risk score.
 
-After removing this signal, a 2-signal score (large transaction amount + 
-risky transaction type) produced a fraud rate that increases with score: 
-0% at score 0, 0.53% at score 1, 0.63% at score 2 — on a 50,000-row sample. 
-The separation between score 1 and 2 is modest at this sample size and 
-would likely sharpen on the full 6M-row dataset.
+Two signals were selected for operational prioritization:
+
+- **Risky transaction type** — `CASH_OUT` or `TRANSFER`
+- **Large transaction amount** — amount above the 95th percentile of the sample
+
+Transaction type showed a stronger relationship with observed fraud than
+large transaction size, so the signals were intentionally given different
+weights:
+
+- risky transaction type = **2 points**
+- large transaction amount = **1 point**
+
+This produces a rule-based risk score from 0 to 3.
+
+## Signal Validation
+
+Balance mismatch was also evaluated as a candidate signal by comparing the
+sender's expected post-transaction balance with the recorded balance.
+
+However, the signal showed an inverse relationship with the fraud label in
+this sample and was therefore excluded from the final risk score.
+
+This illustrates an important modelling principle: an intuitively plausible
+rule should not be included in a composite score without first validating
+its observed behaviour.
+
+## Findings
+
+The final weighted score produced the following distribution:
+
+| Risk Score | Transactions | Fraud Cases | Fraud Rate |
+|---|---:|---:|---:|
+| 0 | 31,440 | 0 | 0.000% |
+| 1 | 104 | 0 | 0.000% |
+| 2 | 16,060 | 85 | 0.529% |
+| 3 | 2,396 | 15 | 0.626% |
+
+All observed fraud cases in the sample fall within scores 2 and 3.
+
+The difference in fraud rate between scores 2 and 3 is modest, so the score
+should not be interpreted as a predictive fraud model. Instead, it provides
+a transparent rule-based mechanism for prioritizing transactions for
+operational review.
+
+## Operational Use
+
+The risk score is translated into review priorities for the monitoring
+dashboard:
+
+- **0 — No Risk Signals**
+- **1 — Large Amount**
+- **2 — Review**
+- **3 — High Priority**
+
+This allows an operations or risk team to move from an overall transaction
+population to a smaller review queue and investigate higher-priority
+transactions first.
 
 ## Recommendation
-Not every intuitive rule is a good signal — each one needs to be validated 
-against ground truth before being combined into a composite score. In this 
-case, a naive balance-mismatch rule would have actively hurt detection 
-accuracy rather than helped it.
+
+Use the score as an operational prioritization layer rather than an automated
+fraud decision.
+
+The analysis demonstrates why candidate signals should be validated
+individually before being combined: adding an intuitive but poorly behaving
+signal can make a rule-based monitoring framework less meaningful rather
+than more effective.

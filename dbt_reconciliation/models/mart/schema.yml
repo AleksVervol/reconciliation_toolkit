@@ -5,10 +5,85 @@ models:
     description: "Orders with no matching delivery record."
 
   - name: mart_amount_discrepancies
-    description: "Matched order/delivery pairs where the amounts don't agree."
+    description: "Orders with a material amount mismatch between order and delivery values."
 
   - name: mart_duplicate_deliveries
-    description: "Order IDs that appear more than once in deliveries."
+    description: "Orders associated with more than one delivery record."
 
-  - name: mart_balance_discrepancies
-    description: "Transactions where the sender's actual balance doesn't match the expected balance after the transaction."
+  - name: mart_reconciliation_dashboard
+    description: >
+      Order-level reconciliation dataset prepared for operational
+      monitoring and Tableau reporting.
+
+    columns:
+      - name: order_id
+        description: Unique identifier of the order.
+        tests:
+          - unique
+          - not_null
+
+      - name: exception_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - 'Reconciled'
+                  - 'Missing Delivery'
+                  - 'Duplicate Delivery'
+                  - 'Amount Discrepancy'
+
+      - name: has_exception
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: delivery_count
+        tests:
+          - not_null
+
+  - name: mart_transaction_risk_dashboard
+    description: >
+      Transaction-level operational mart for risk monitoring and review
+      prioritization.
+
+    columns:
+      - name: step
+        tests:
+          - not_null
+
+      - name: type
+        tests:
+          - not_null
+
+      - name: amount
+        tests:
+          - not_null
+
+      - name: sender_id
+        tests:
+          - not_null
+
+      - name: receiver_id
+        tests:
+          - not_null
+
+      - name: risk_score
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3]
+
+      - name: review_priority
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - 'No Risk Signals'
+                  - 'Large Amount'
+                  - 'Review'
+                  - 'High Priority'
