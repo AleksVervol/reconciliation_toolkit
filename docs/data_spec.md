@@ -1,191 +1,187 @@
 # v2 data specification
 
-All values synthetic. Illustrative rates only (about 85 INR and 4.4 MYR per
-USD); they exist to make errors visible, not to match any real period.
+All files are synthetic and are generated into `data/v2/`.
 
-**Rate convention, fixed everywhere:** `local per USD` (for example 85.0 INR
-per 1 USD). USD credited = local amount / rate. A rate typed in the opposite
-convention is exactly how inversion errors happen, so the convention is part
-of the spec.
+## Shared conventions
 
-## Run date
+- Customer balances are held in USD.
+- PSP transactions, PSP account balances, settlements, and bank receipts are in local currency: INR or MYR.
+- FX-rate convention is always **local currency per 1 USD**.
+- `provider_transaction_id` is mandatory for every customer payment in scope.
+- `local_amount` and `fee_local` are stored as positive values in transaction files. Signs appear only in `psp_account_statement.csv`, where an entry changes the PSP balance.
+- Timestamps are used for reconciliation timing. `AS_OF_TIMESTAMP` is the fixed point at which controls are run.
 
-Each generated dataset is one reconciliation run at a fixed `as_of_timestamp`
-(a constant in the generator, for example 2026-08-15 10:00:00). Every timing
-window (T+1, T+2, pending vs exception) is measured against it, so results
-are reproducible.
+## 1. `business_calendar.csv`
 
-## Input files
+Bank-calendar input used for settlement-to-bank timing.
 
-Five files, not four: the PSP settlement report (batch totals, reserve, PSP
-rate) is a separate document from the transaction report, so it needs its
-own file.
-
-### 1. `platform_ledger.csv`  (what the platform believes)
-
-| Column | Type | Note |
+| Column | Type | Description |
 |---|---|---|
-| ledger_id | string | primary key |
-| customer_id | string | |
-| created_at | timestamp | |
-| provider_transaction_id | string | join key to PSP; required for PSP deposits in this scope |
-| currency | string | INR or MYR |
-| local_amount | decimal | amount the customer paid |
-| platform_fx_rate | decimal | local per USD, platform's own rate |
-| credited_usd | decimal(2) | what the customer received |
-| status | string | credited / pending |
+| `calendar_date` | date | Calendar date |
+| `is_business_day` | boolean | Whether the bank can post a settlement on that date |
 
-### 2. `psp_transactions.csv`  (what the provider confirmed)
+Customer payments can happen on weekends. This calendar is used for bank posting only.
 
-| Column | Type | Note |
+## 2. `approved_fx_rates.csv`
+
+Approved platform rates used to calculate customer balance changes.
+
+| Column | Type | Description |
 |---|---|---|
-| psp_record_id | string | primary key |
-| provider_transaction_id | string | should be unique; duplicates are an exception |
-| confirmed_at | timestamp | |
-| currency | string | |
-| local_amount | decimal | confirmed amount, local currency |
-| fee_local | decimal | PSP fee on this transaction |
-| status | string | success / failed |
-| settlement_batch_id | string | null until included in a batch |
+| `rate_date` | date | Date of the approved rate |
+| `currency` | string | `INR` or `MYR` |
+| `approved_deposit_rate` | decimal | Approved local-per-USD rate for deposits |
+| `approved_payout_rate` | decimal | Approved local-per-USD rate for payouts |
 
-### 3. `psp_settlement_batches.csv`  (the provider's settlement report)
+The deposit and payout rates are separate because the platform can apply a different spread to incoming and outgoing customer flows.
 
-| Column | Type | Note |
+## 3. `customer_opening_balances.csv`
+
+Customer balances immediately before the reporting period begins.
+
+| Column | Type | Description |
 |---|---|---|
-| settlement_batch_id | string | primary key |
-| currency | string | one batch per currency |
-| cutoff_at | timestamp | |
-| settlement_date | date | |
-| txn_count | integer | |
-| gross_local | decimal | |
-| fees_local | decimal | |
-| reserve_local | decimal | withheld, not released in this scope |
-| net_local | decimal | gross - fees - reserve |
-| settlement_fx_rate | decimal | local per USD, PSP's rate, shown only here |
-| net_usd | decimal(2) | net_local / settlement_fx_rate |
+| `snapshot_date` | date | Date of the opening-balance snapshot |
+| `customer_id` | string | Customer identifier |
+| `opening_balance_usd` | decimal | Customer balance in USD before generated payments |
 
-### 4. `bank_statement.csv`  (what actually arrived)
+Opening balances make early-period payouts possible without assuming that every customer starts at zero.
 
-| Column | Type | Note |
+## 4. `platform_ledger.csv`
+
+The platform’s view of customer balance movements.
+
+| Column | Type | Description |
 |---|---|---|
-| bank_line_id | string | primary key |
-| value_date | date | |
-| amount_usd | decimal(2) | |
-| reference | string | free text, should contain batch id; sometimes truncated or missing |
+| `ledger_id` | string | Primary key |
+| `customer_id` | string | Customer identifier |
+| `transaction_type` | string | `deposit` or `payout` |
+| `payment_created_at` | timestamp | When the customer payment was created |
+| `ledger_status_updated_at` | timestamp | When the platform last updated its status |
+| `provider_transaction_id` | string | Join key to the PSP transaction |
+| `currency` | string | Transaction currency: `INR` or `MYR` |
+| `local_amount` | decimal | Payment amount in local currency |
+| `platform_fx_rate` | decimal | Local currency per 1 USD, applied by the platform |
+| `customer_balance_change_usd` | decimal | Positive for a deposit, negative for a payout |
+| `customer_balance_before_usd` | decimal | Customer balance before this movement |
+| `customer_balance_after_usd` | decimal | Customer balance after this movement |
+| `status` | string | Usually `credited` for a deposit or `debited` for a payout; scenarios can also be `pending` or `declined` |
+| `decline_reason` | string / null | Reason for a declined ledger payment |
 
-Matching batch to bank line, recorded as `match_method`:
+Core arithmetic:
 
-1. batch ID found in `reference` -> `reference`;
-2. no ID: look up by amount and date; exactly one candidate -> `fallback`;
-3. more than one candidate -> `ambiguous`, never merged silently;
-4. no candidate -> `unmatched`.
-
-Imperfect references are realistic and are part of the exercise.
-
-### 5. `approved_fx_rates.csv`  (the approved policy rate)
-
-| Column | Type | Note |
-|---|---|---|
-| rate_date | date | |
-| currency | string | |
-| approved_platform_rate | decimal | local per USD; the rate approved for customer credit, with the permitted spread already applied |
-
-The generator derives this from a hidden market rate plus a policy spread
-(a generator parameter). The platform may fetch its rate at a different
-moment than the daily approved rate, so a small tolerance band is still
-needed; it covers timing, not margin.
-
-## Controls and starting tolerances
-
-Tolerances are config (`dbt_project.yml` vars) and are **starting values to
-tune against the noise**, not facts.
-
-### Level 1: ledger <-> PSP
-
-| Check | Logic | Starting value |
-|---|---|---|
-| Missing at PSP | ledger credited, no PSP record, older than window | window T+1 |
-| Pending, not exception | same, but inside window | |
-| Missing in ledger | PSP success, no ledger record, older than window | window T+1 |
-| Duplicate PSP ID | count of provider_transaction_id > 1 | |
-| Amount mismatch | local amount differs ledger vs PSP | exact (same currency) |
-| Failed at PSP, credited in ledger | PSP status failed, ledger status credited | |
-
-### Level 2: FX credit validation
-
-| Check | Logic | Starting value |
-|---|---|---|
-| Arithmetic | credited_usd vs local_amount / platform_fx_rate | 0.01 USD |
-| Rate drift | abs(platform_rate / approved_platform_rate - 1) | 0.5% band **[tune]** |
-| Scale error (100x) | platform_rate / approved_platform_rate close to 100 or to 0.01 | ratio within 5% **[tune]**, own exception type |
-| Inverted rate | platform_rate * approved_platform_rate close to 1 | product within 5% **[tune]**, own exception type |
-| Missing approved rate | no approved rate for date and currency | data-quality exception |
-
-Drift inside the band is not an exception. Scale and inversion errors are
-separated from ordinary drift because the cause, the risk, and the fix differ.
-
-The arithmetic check catches a wrong crediting formula even when the ledger
-rate looks normal; the rate checks catch a wrong rate even when the
-arithmetic is consistent. Each covers the other's blind spot.
-
-### Level 3: PSP batch <-> bank
-
-Expected net, written once and reused everywhere:
-
-```
-net_local = gross_local - fees_local - reserve_local
-net_usd   = net_local / settlement_fx_rate
+```text
+customer_balance_after_usd =
+    customer_balance_before_usd + customer_balance_change_usd
 ```
 
-| Check | Logic | Starting value |
+For a deposit:
+
+```text
+customer_balance_change_usd = local_amount / platform_fx_rate
+```
+
+For a payout:
+
+```text
+local_amount = abs(customer_balance_change_usd) × platform_fx_rate
+```
+
+## 5. `psp_transactions.csv`
+
+The PSP’s confirmation of customer payments.
+
+| Column | Type | Description |
 |---|---|---|
-| Batch composition | sum of psp_transactions in batch vs batch gross_local | exact |
-| Fee composition | sum of fee_local in batch vs batch fees_local | exact; reserve exists only at batch level |
-| Report arithmetic | net_usd vs formula above | 0.01 USD |
-| Payout vs report | bank amount_usd vs batch net_usd | 0.01 USD **[confirm bank charges]** |
-| Batch not received | batch settlement_date plus payout window, no bank line | window T+2 |
-| Unmatched bank line | bank line with no batch | |
-| Ambiguous bank match | more than one candidate batch by amount and date | flagged, not guessed |
+| `psp_record_id` | string | PSP-record primary key |
+| `provider_transaction_id` | string | Join key to the platform ledger |
+| `transaction_type` | string | `deposit` or `payout` |
+| `psp_status_updated_at` | timestamp | When the PSP confirmed or failed the payment |
+| `currency` | string | `INR` or `MYR` |
+| `local_amount` | decimal | Payment amount in local currency |
+| `fee_local` | decimal | PSP fee in local currency |
+| `status` | string | `success` or `failed` |
 
-### Customer-credit vs settlement FX variance (metric, not an exception)
+A successful PSP transaction normally produces two PSP account-statement movements: the payment itself and its fee.
 
-```
-fx_variance_usd = sum(credited_usd of transactions in batch)
-             - gross_local / settlement_fx_rate
-```
+## 6. `psp_account_statement.csv`
 
-Positive value: customers were credited more USD than the PSP's rate returns.
-This may be a cost to the platform, but it can equally reflect the intended
-margin or market movement between the two moments, so it prompts an
-investigation and does not deliver a verdict. Fees are excluded to isolate
-the FX effect. Reported per batch and per day; alert only above a
-configurable threshold.
+Running local-currency balance of the platform’s PSP account.
 
-## Noise and anomalies in the generator
+| Column | Type | Description |
+|---|---|---|
+| `statement_entry_id` | string | Primary key |
+| `event_timestamp` | timestamp | Time of the balance movement |
+| `currency` | string | `INR` or `MYR` |
+| `transaction_type` | string | `deposit`, `payout`, or `settlement` |
+| `entry_type` | string | `deposit_received`, `payout_sent`, `psp_fee`, or `settlement` |
+| `reference_id` | string | Payment ID or settlement ID that caused the movement |
+| `psp_record_id` | string / null | Related PSP transaction record; null for settlement |
+| `entry_amount_local` | decimal | Signed local-currency movement |
+| `balance_before_local` | decimal | PSP balance before the movement |
+| `balance_after_local` | decimal | PSP balance after the movement |
 
-| Type | Treatment |
+Signs in `entry_amount_local`:
+
+| Entry type | Sign |
 |---|---|
-| Confirmation lag within window | noise, must not be flagged |
-| Rounding up to 0.01 USD | noise |
-| Rate within drift band | noise |
-| Rate outside band for a window of hours or a day | anomaly, clustered |
-| Inverted rate, 100x rate, or wrong crediting formula | anomaly, clustered |
-| Missing PSP record, missing ledger record, duplicate ID | anomaly, scattered |
-| Short or wrong bank payout, missing payout | anomaly, batch level |entity_type | entity_id | anomaly_type | injected_value
+| `deposit_received` | positive |
+| `payout_sent` | negative |
+| `psp_fee` | negative |
+| `settlement` | negative |
 
-Every injected anomaly is written to `_truth.csv` (record id, type, injected
-value). dbt never reads it. Report precision and recall per control, with the
-false positive count. Run the Level 2 band at several values (for example
-0.1%, 0.5%, 1%, 2%) and show how false positives and misses trade off.
+Core arithmetic:
 
-## dbt layers
+```text
+balance_after_local = balance_before_local + entry_amount_local
+```
 
-| Layer | Models |
-|---|---|
-| staging | stg_platform_ledger, stg_psp_transactions, stg_psp_settlement_batches, stg_bank_statement, stg_approved_fx_rates |
-| prep | prep_txn_reconciliation (L1), prep_fx_validation (L2), prep_batch_reconciliation (L3, with `match_method`), prep_fx_variance |
-| mart | mart_exception_queue (one row per exception), mart_fx_variance_daily, mart_control_summary |
+## 7. `psp_settlements.csv`
 
-Exception priority: USD at risk x age in days, so the queue answers
-"what burns first". Each row carries the action the team would take, as in
-the scope table.
+Settlement instructions created from the accumulated PSP balance.
+
+| Column | Type | Description |
+|---|---|---|
+| `settlement_id` | string | Primary key |
+| `settlement_timestamp` | timestamp | When the PSP sends the settlement |
+| `currency` | string | Settlement currency: `INR` or `MYR` |
+| `balance_before_local` | decimal | PSP balance before settlement |
+| `payout_buffer_local` | decimal | Local balance retained for future payouts |
+| `settlement_local_amount` | decimal | Local-currency amount sent to the bank |
+| `balance_after_local` | decimal | PSP balance after settlement |
+| `fees_local` | decimal | Transaction-level PSP fees for the settlement review period |
+
+The settlement is not linked to individual transactions. It is the balance surplus after the payout buffer:
+
+```text
+settlement_local_amount =
+    max(0, balance_before_local - payout_buffer_local)
+```
+
+## 8. `bank_statement.csv`
+
+Bank confirmation of received settlements.
+
+| Column | Type | Description |
+|---|---|---|
+| `bank_entry_id` | string | Primary key |
+| `bank_booked_at` | timestamp | When the bank booked the settlement |
+| `currency` | string | `INR` or `MYR` |
+| `amount_local` | decimal | Amount received by the bank in local currency |
+| `entry_type` | string | `psp_settlement_received` |
+| `bank_reference` | string | Expected to contain `settlement_id` |
+
+A settlement normally appears on the next business day. Its absence before that window expires is not an exception.
+
+## 9. `expected_exceptions.csv`
+
+Validation reference for generated scenarios. This file is not an input to reconciliation models.
+
+| Column | Type | Description |
+|---|---|---|
+| `scenario` | string | Name of the generated scenario |
+| `provider_transaction_id` | string | Related payment ID or settlement ID |
+| `expected_result` | string | `exception` or `normal_timing` |
+| `control` | string | Control expected to evaluate the scenario |
+
+The file validates whether controls catch the intended breaks without flagging expected timing noise.

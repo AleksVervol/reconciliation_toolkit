@@ -1,90 +1,117 @@
 # v2 scope: Multi-Currency Payment Reconciliation & Settlement Control
 
-Working document. Not the README. Assumptions marked **[confirm]** are my
-reading of how the flow works and should be corrected against real practice.
+This is a synthetic portfolio project. It models a payments reconciliation flow from a customer transaction to the platform ledger, the PSP account balance, settlement, and the bank statement.
+
+Values marked **[tune]** are starting assumptions for the project, not claims about one universal payment-industry rule.
 
 ## The flow being modelled
 
-1. A customer pays in a local currency (INR or MYR) through a PSP.
-2. The PSP confirms the payment **in local currency**. It does not convert.
-3. The platform converts at **its own rate** and credits the customer in USD.
-4. The PSP groups confirmed payments into settlement batches. The settlement
-   report shows batch totals, fees, reserve, and the **PSP's own FX rate**
-   (this is the only place the PSP shows a rate).
-5. The net amount arrives in USD on the bank statement.
+1. A customer makes a deposit or receives a payout.
+2. The platform records the customer balance movement in USD.
+3. The PSP processes the transaction in local currency: INR or MYR.
+4. Deposits, payouts, and PSP fees change the running PSP balance.
+5. On a weekly schedule, the PSP sends a settlement from the available local-currency balance.
+6. The bank statement confirms that settlement on the next business day.
 
-## Core principle
+A settlement is not a collection of transaction-level payouts. It is a withdrawal of accumulated funds from the PSP balance after retaining a buffer for future customer payouts.
 
-A payment can reconcile by transaction ID and still be financially wrong if
-the customer was credited using an incorrect FX rate.
-For this project, T+1 and T+2 mean business days. Public holidays are out
-of scope and documented as a limitation.
+## Currency and FX logic
+
+| Area | Currency |
+|---|---|
+| Customer balance and platform ledger | USD |
+| PSP transactions, PSP balance, settlement, bank receipt | INR or MYR |
+
+The platform applies its own approved rate when calculating a customer balance movement:
+
+- for a **deposit**, `usd credited = local amount / approved_deposit_rate`;
+- for a **payout**, `local amount = usd debited × approved_payout_rate`.
+
+The project uses separate approved deposit and payout rates. This reflects that the platform can apply a spread differently for incoming and outgoing customer flows.
+
+Settlement is sent to the bank in the same local currency. FX conversion between the PSP balance and the bank is out of scope: it would be a separately agreed treasury or exchange process.
+
+## Settlement logic
+
+The PSP account statement is a running local-currency balance:
+
+```text
+deposit       → increases PSP balance
+payout        → decreases PSP balance
+PSP fee       → decreases PSP balance
+settlement    → decreases PSP balance
+```
+
+Before each settlement, the model retains a local-currency payout buffer:
+
+```text
+payout buffer = (successful payouts + PSP fees during the previous 7 days) × 1.20
+```
+
+The `1.20` multiplier and weekly Monday settlement schedule are **[tune]** assumptions. They exist to create a realistic reason why the PSP balance is not settled to zero.
 
 ## In scope
 
-- customer deposits in INR and MYR;
-- customer balances and settlement reporting in USD;
-- Level 1: transaction reconciliation, platform ledger <-> PSP report;
-- Level 2: FX credit validation against an approved daily platform rate;
-- Level 3: batch reconciliation, PSP settlement report <-> bank statement;
-- FX variance: platform credit rate vs PSP settlement rate (monitored as a
-  metric, not an exception, see below);
-- PSP fees, reserves, timing windows, exception prioritisation.
+- Customer deposits and payouts;
+- Customer opening balances and balance changes in USD;
+- PSP transaction confirmations in INR and MYR;
+- Separate timestamps for payment creation and status update;
+- PSP transaction fees;
+- Running PSP account balance;
+- Local-currency settlements and bank receipts;
+- Business-day calendar and timing windows;
+- Approved platform FX rates for deposits and payouts;
+- Reconciliation controls and a prioritised exception queue.
 
 ## Out of scope
 
-- real PSP, bank, or employer data (all data is synthetic);
-- refunds, reserve release and chargeback lifecycles;
-- manual ledger adjustments (every PSP deposit has a provider transaction ID);
-- payouts to customers, crypto conversion, treasury hedging;
-- a predictive model: controls are explicit rules with stated tolerances.
+- Real PSP, bank, customer, or employer data;
+- Manual ledger adjustments;
+- Chargebacks, refunds, and reserve release;
+- Automatic FX conversion of settlement funds;
+- Treasury hedging or exchange-provider selection;
+- Predictive fraud or risk scoring models.
 
-## Two rates, two different jobs
+## Reconciliation controls
 
-| Rate | Where it comes from | Used for |
+| Control | Compares | Examples of breaks |
 |---|---|---|
-| Platform rate | Platform ledger, applied per transaction | What the customer was credited with |
-| Approved platform rate | Daily file: market rate with the spread the policy allows already applied | Level 2: was the platform rate within policy? |
-| PSP settlement rate | PSP settlement report, per batch | Level 3 expected USD and the FX variance metric |
+| Transaction completeness | Platform ledger ↔ PSP transactions | A PSP success has no ledger record; a ledger payment has no PSP record |
+| Status and timing | Platform ledger ↔ PSP transactions | PSP success while ledger is overdue pending or declined; PSP failed while ledger is credited |
+| Transaction amounts | Platform ledger ↔ PSP transactions | Local amount differs between the two sources |
+| FX validation | Local amount, platform rate, USD balance movement | 100× rate error, inverted rate, arithmetic mismatch |
+| PSP balance reconciliation | PSP transactions and settlements ↔ PSP account statement | A movement does not explain the running balance |
+| Settlement fee validation | Transaction-level fees ↔ settlement fee total | Settlement reports an incorrect fee total |
+| Settlement-to-bank reconciliation | PSP settlements ↔ bank statement | A settlement is missing from the bank after its timing window |
 
-The platform rate and the PSP settlement rate are expected to differ.
-That difference is the **customer-credit vs settlement FX variance**. It can
-reflect an intended margin, market movement between the two moments, or an
-error, so it is a prompt to investigate, not a verdict. It is tracked per
-batch and per day, and alerted only above a threshold. **[confirm]**
+## Timing rules
 
-## Three controls and one metric
+A difference is not automatically an exception.
 
-| Level | Compares | Typical breaks |
-|---|---|---|
-| 1. Payment confirmation | ledger <-> PSP transactions | missing on one side, duplicate ID, amount or status mismatch |
-| 1. Ledger posting overdue | PSP status is success, ledger status is pending, older than window | window T+1 |
-| 2. FX credit validation | local amount and platform rate <-> credited USD, platform rate <-> approved rate | wrong, inverted or 100x rate, wrong crediting formula, missing approved rate |
-| 3. Settlement | PSP batch net <-> bank payout | batch not received, fee or reserve wrong, payout does not match report |
-| FX variance (metric) | credited USD <-> USD at PSP settlement rate | systematic gap between the two rates |
+- A PSP transaction can be successful while the platform ledger remains `pending` inside the T+1 window **[tune]**.
+- A PSP settlement can be absent from the bank statement until the next business-day posting window has passed.
+- Weekend payments are valid. The business calendar affects bank posting, not whether customers can make payments.
 
-## What must NOT be flagged (deliberate noise)
+The controls should identify overdue breaks without flagging expected processing delays.
 
-The controls are judged on what they leave alone as much as what they catch:
+## Generated scenarios
 
-- confirmation lag inside the timing window (pending, not an exception);
-- rounding differences up to 0.01 USD per transaction;
-- platform rate within the tolerance band of the reference rate;
-- batch totals that differ only by rounding.
+The generator includes normal and exceptional cases:
 
-## Data generation rules
+- a recent PSP success with a ledger status still `pending` — expected timing, not an exception;
+- PSP success with overdue pending or declined ledger status;
+- PSP failure while the ledger still credits the customer;
+- a PSP transaction absent from the ledger;
+- a 100× FX-rate error;
+- an inverted FX rate;
+- a settlement missing from the bank after its timing window;
+- a settlement fee total that does not match the underlying PSP transactions.
 
-- Each dataset is one reconciliation run at a fixed `as_of_timestamp`
-  (a constant in the generator). All timing checks are evaluated relative to
-  it, so results are reproducible.
-- Anomalies are **clustered**, as in reality: a bad rate stays wrong for a
-  window and hits many rows, rather than random single rows.
-- Anomaly rates are not round numbers and differ by currency and period.
-- Ground truth lives in a separate `_truth` file that dbt models never read.
-  It is used only to report precision, recall, and false positives.
+`expected_exceptions.csv` is the validation reference for these cases. Reconciliation models must not read it as an input source.
 
 ## Delivery stages
 
-1. Generator, schemas, and Level 1 + Level 2 (the $1 -> $100 case).
-2. Level 3, FX variance, exception queue.
-3. Tableau dashboard and README.
+1. Generate synthetic sources and expected scenarios — complete.
+2. Build dbt staging and reconciliation models.
+3. Add data tests and an exception queue prioritised by amount at risk and age.
+4. Build a Tableau dashboard and final project documentation.
